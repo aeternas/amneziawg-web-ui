@@ -191,6 +191,7 @@ Official docker image repository: https://hub.docker.com/r/alexishw/amneziawg-we
 | `AUTO_START_SERVERS` | `true` | Auto-start servers on container startup |
 | `DEFAULT_MTU` | `1280` | Default MTU value for new servers. Effective only for api requests. For UI management set via UI. |
 | `DEFAULT_SUBNET` | `10.0.0.0/24` | Default subnet for new servers. Effective only for api requests. For UI management set via UI. |
+| `DEFAULT_SUBNET_V6` | `fd42:42:42::/64` | Default IPv6 subnet for new servers. Effective only for api requests. For UI management set via UI. |
 | `DEFAULT_PORT` | `51820` | Default port for new servers. Effective only for api requests. For UI management set via UI. |
 | `DEFAULT_DNS` | `8.8.8.8,1.1.1.1` | Default DNS servers for clients. Effective only for api requests. For UI management set via UI. |
 | `SSL_EMAIL` | `-` | Email used to register Let's encrypt account
@@ -250,6 +251,7 @@ docker run -d \
   -e AUTO_START_SERVERS=false \
   -e DEFAULT_MTU=1420 \
   -e DEFAULT_SUBNET=10.8.0.0/24 \
+  -e DEFAULT_SUBNET_V6=fd42:42:42::/64 \
   -e DEFAULT_PORT=51821 \
   -e DEFAULT_DNS="8.8.8.8,8.8.4.4" \
   -e SSL_EMAIL="your@email.com" \
