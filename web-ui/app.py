@@ -44,6 +44,7 @@ NGINX_PORT = os.getenv('NGINX_PORT', '80')
 AUTO_START_SERVERS = os.getenv('AUTO_START_SERVERS', 'true').lower() == 'true'
 DEFAULT_MTU = int(os.getenv('DEFAULT_MTU', '1280'))
 DEFAULT_SUBNET = os.getenv('DEFAULT_SUBNET', '10.0.0.0/24')
+DEFAULT_SUBNET_V6 = os.getenv('DEFAULT_SUBNET_V6', 'fd42:42:42::/64')
 DEFAULT_PORT = int(os.getenv('DEFAULT_PORT', '51820'))
 DEFAULT_DNS = os.getenv('DEFAULT_DNS', '8.8.8.8,1.1.1.1')
 
@@ -73,6 +74,7 @@ print(f"NGINX_PORT: {NGINX_PORT}")
 print(f"AUTO_START_SERVERS: {AUTO_START_SERVERS}")
 print(f"DEFAULT_MTU: {DEFAULT_MTU}")
 print(f"DEFAULT_SUBNET: {DEFAULT_SUBNET}")
+print(f"DEFAULT_SUBNET_V6: {DEFAULT_SUBNET_V6}")
 print(f"DEFAULT_PORT: {DEFAULT_PORT}")
 print(f"DEFAULT_DNS: {DEFAULT_DNS}")
 print(f"DNS_SERVERS: {DNS_SERVERS}")
@@ -165,12 +167,7 @@ class AmneziaManager:
     def is_valid_ip(self, ip):
         """Check if the string is a valid IP address"""
         try:
-            parts = ip.split('.')
-            if len(parts) != 4:
-                return False
-            for part in parts:
-                if not 0 <= int(part) <= 255:
-                    return False
+            ipaddress.ip_address(ip)
             return True
         except:
             return False
@@ -262,6 +259,7 @@ class AmneziaManager:
         server_name = server_data.get('name', 'New Server')
         port = server_data.get('port', DEFAULT_PORT)
         subnet = server_data.get('subnet', DEFAULT_SUBNET)
+        subnet_v6 = server_data.get('subnet_v6', DEFAULT_SUBNET_V6)
         mtu = server_data.get('mtu', DEFAULT_MTU)
 
         # Get DNS servers from request or use environment default
@@ -312,11 +310,16 @@ class AmneziaManager:
         network = subnet_parts[0]
         prefix = subnet_parts[1] if len(subnet_parts) > 1 else "24"
         server_ip = self.get_server_ip(network)
+        server_ipv6 = self.get_server_ipv6(subnet_v6) if subnet_v6 else None
 
         # Create WireGuard server configuration
+        address_values = [f"{server_ip}/{prefix}"]
+        if server_ipv6:
+            address_values.append(server_ipv6)
+
         server_config_content = f"""[Interface]
 PrivateKey = {server_keys['private_key']}
-Address = {server_ip}/{prefix}
+Address = {', '.join(address_values)}
 ListenPort = {port}
 SaveConfig = false
 MTU = {mtu}
@@ -351,7 +354,9 @@ H4 = {obfuscation_params['H4']}
             "server_public_key": server_keys['public_key'],
             "server_private_key": server_keys['private_key'],
             "subnet": subnet,
+            "subnet_v6": subnet_v6,
             "server_ip": server_ip,
+            "server_ipv6": server_ipv6,
             "mtu": mtu,
             "public_ip": self.public_ip,
             "obfuscation_enabled": enable_obfuscation,
@@ -400,6 +405,14 @@ H4 = {obfuscation_params['H4']}
         if len(parts) == 4:
             return f"{parts[0]}.{parts[1]}.{parts[2]}.1"
         return "10.0.0.1"
+
+    def get_server_ipv6(self, subnet_v6):
+        """Get server IPv6 from network (first usable IPv6)"""
+        try:
+            network = ipaddress.ip_network(subnet_v6, strict=False)
+            return f"{next(network.hosts())}/{network.prefixlen}"
+        except Exception:
+            return None
 
     def get_new_client_ip(self, server_id):
         """Get client IP from server subnet"""
@@ -468,6 +481,7 @@ H4 = {obfuscation_params['H4']}
         client_ip = self.get_new_client_ip(server_id)
         if not client_ip:
             return None
+        client_ipv6 = self.get_new_client_ipv6(server_id)
 
         # Process I-settings
         client_i_settings = {}
@@ -499,6 +513,7 @@ H4 = {obfuscation_params['H4']}
             "client_public_key": client_keys["public_key"],
             "preshared_key": preshared_key,
             "client_ip": client_ip,
+            "client_ipv6": client_ipv6,
             "obfuscation_enabled": server["obfuscation_enabled"],
             "obfuscation_params": server["obfuscation_params"],
             "apply_i_settings": apply_i_settings,
@@ -514,6 +529,8 @@ PublicKey = {client_keys['public_key']}
 PresharedKey = {preshared_key}
 AllowedIPs = {client_ip}/32
 """
+        if client_ipv6:
+            client_peer_config = client_peer_config.rstrip() + f", {client_ipv6}/128\n"
 
         # Append client to server config file
         with open(server['config_path'], 'a') as f:
@@ -619,9 +636,13 @@ AllowedIPs = {client_ip}/32
 # Server IP: {server['public_ip']}:{server['port']}
 """
 
+        address_values = [f"{client_config['client_ip']}/32"]
+        if client_config.get('client_ipv6'):
+            address_values.append(f"{client_config['client_ipv6']}/128")
+
         config += f"""[Interface]
 PrivateKey = {client_config['client_private_key']}
-Address = {client_config['client_ip']}/32
+Address = {', '.join(address_values)}
 DNS = {', '.join(server['dns'])}
 MTU = {server['mtu']}
 """
@@ -665,6 +686,34 @@ AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 """
         return config
+
+    def get_new_client_ipv6(self, server_id):
+        """Get next available client IPv6 from server subnet_v6"""
+        server = next((s for s in self.config['servers'] if s['id'] == server_id), None)
+        if not server:
+            return None
+
+        subnet_v6 = server.get('subnet_v6')
+        if not subnet_v6:
+            return None
+
+        try:
+            network = ipaddress.ip_network(subnet_v6, strict=False)
+            used_ips = set()
+            if server.get('server_ipv6'):
+                used_ips.add(server['server_ipv6'].split('/')[0])
+            for client in server.get('clients', []):
+                if client.get('client_ipv6'):
+                    used_ips.add(client['client_ipv6'])
+
+            for ip in network.hosts():
+                ip_str = str(ip)
+                if ip_str not in used_ips:
+                    return ip_str
+        except Exception as e:
+            print(f"Failed to allocate IPv6 client IP for {server_id}: {e}")
+
+        return None
     
     def update_client_i_settings(self, server_id, client_id, apply_i_settings=None, i_settings=None):
         """Update client I-settings"""
@@ -873,12 +922,15 @@ PersistentKeepalive = 25
         self.save_config()
         return client, "Suspension time updated"
 
-    def setup_iptables(self, interface, subnet):
+    def setup_iptables(self, interface, subnet, subnet_v6=None):
         """Setup iptables rules for WireGuard interface"""
         try:
             script_path = "/app/scripts/setup_iptables.sh"
             if os.path.exists(script_path):
-                result = self.execute_command(f"{script_path} {interface} {subnet}")
+                cmd = f"{script_path} {interface} {subnet}"
+                if subnet_v6:
+                    cmd += f" {subnet_v6}"
+                result = self.execute_command(cmd)
                 if result is not None:
                     print(f"iptables setup completed for {interface}")
                     return True
@@ -892,12 +944,15 @@ PersistentKeepalive = 25
             print(f"Error setting up iptables for {interface}: {e}")
             return False
 
-    def cleanup_iptables(self, interface, subnet):
+    def cleanup_iptables(self, interface, subnet, subnet_v6=None):
         """Cleanup iptables rules for WireGuard interface"""
         try:
             script_path = "/app/scripts/cleanup_iptables.sh"
             if os.path.exists(script_path):
-                result = self.execute_command(f"{script_path} {interface} {subnet}")
+                cmd = f"{script_path} {interface} {subnet}"
+                if subnet_v6:
+                    cmd += f" {subnet_v6}"
+                result = self.execute_command(cmd)
                 if result is not None:
                     print(f"iptables cleanup completed for {interface}")
                     return True
@@ -922,7 +977,7 @@ PersistentKeepalive = 25
             result = self.execute_command(f"/usr/bin/awg-quick up {server['interface']}")
             if result is not None:
                 # Setup iptables rules
-                iptables_success = self.setup_iptables(server['interface'], server['subnet'])
+                iptables_success = self.setup_iptables(server['interface'], server['subnet'], server.get('subnet_v6'))
 
                 server['status'] = 'running'
                 self.save_config()
@@ -950,7 +1005,7 @@ PersistentKeepalive = 25
 
         try:
             # Cleanup iptables rules first
-            iptables_cleaned = self.cleanup_iptables(server['interface'], server['subnet'])
+            iptables_cleaned = self.cleanup_iptables(server['interface'], server['subnet'], server.get('subnet_v6'))
 
             # Use awg-quick to bring down the interface
             result = self.execute_command(f"/usr/bin/awg-quick down {server['interface']}")
